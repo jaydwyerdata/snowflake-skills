@@ -46,6 +46,9 @@ a CSV assigns them.
 
 Everything else is identical: policy, soft delete, refresh, offboarding, audit, validation.
 
+Solution diagrams: [Mode A](../examples/keyed_column/solution-diagram.png) and
+[Mode B](../examples/service_tickets/solution-diagram.png).
+
 ---
 
 ## 3. Why There Is a Governed Copy

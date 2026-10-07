@@ -37,6 +37,12 @@ very next query. Default deny: a role with `SELECT` but no mapping sees zero row
 | New row | Visible once its key is mapped | Invisible until a CSV assigns it |
 | Example | [`examples/keyed_column/`](examples/keyed_column/) | [`examples/service_tickets/`](examples/service_tickets/) |
 
+### Solution diagrams
+
+| Mode A: key already in the data | Mode B: the business assigns the key |
+|---|---|
+| ![Mode A solution diagram](examples/keyed_column/solution-diagram.png) | ![Mode B solution diagram](examples/service_tickets/solution-diagram.png) |
+
 ## Why a governed copy
 
 Consumers never query the other team's table. A governed copy, owned by the access team and refreshed
