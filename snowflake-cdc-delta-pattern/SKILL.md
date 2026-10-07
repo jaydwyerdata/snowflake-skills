@@ -5,7 +5,7 @@ description: Generate a complete Snowflake snapshot-based Change Data Capture (C
 
 # Snowflake Snapshot CDC Delta Pattern
 
-Generates a full snapshot-based CDC pipeline (tables, procedures, tasks) for a single use case, on top of a curated Snowflake source view, producing an append-only delta table that a downstream reverse ETL or integration job can poll.
+Generates a full snapshot-based CDC pipeline (tables, procedures, tasks) for a single use case, on top of a curated Snowflake source view, producing an append-only delta table that a downstream reverse ETL or integration job can poll. Finishes by writing a build record (see Step 5).
 
 ## When to use this pattern
 
@@ -73,6 +73,14 @@ After generating the SQL, give the user a short summary covering:
 - How a delete flows end to end (soft-delete in BASE, logged to CHANGE_HISTORY, delivered to DELTA with `ACTION = 'DELETE'` and last-known values, eventually hard-purged from BASE by housekeeping).
 - The retention windows chosen and what they mean practically (delta retention equals the maximum backfill gap before a manual re-load is needed).
 
+### Step 5: Write the build record
+
+Always finish by writing `BUILD_RECORD.md` in the user's project, following
+`references/build-record-template.md`: what was built, every input and decision and why, the source
+contract, every object and its owner, how a change flows through, the delivery contract for the
+consumer, how it was verified and what was not, and a handover checklist. Use the real names from
+this build. Append a dated section if the file exists. Offer it to the user before ending.
+
 ## Guardrails
 
 - Never hard-code a Snowflake organization or account identifier in generated SQL or documentation. Use database/schema names the user supplies, or session context functions.
@@ -83,4 +91,5 @@ After generating the SQL, give the user a short summary covering:
 ## Reference files
 
 - `references/pattern-design.md`: full pattern specification (architecture, all four+one procedures in detail, retention design, observability, scope limits, and why not Streams or Dynamic Tables). Read before generating any SQL.
+- `references/build-record-template.md`: the build record to write at the end.
 - `examples/customer_profile/`: a worked example (setup, object set, a five-day walkthrough and 19 PASS/FAIL assertions), run live in a Snowflake trial account on 7 October 2026.

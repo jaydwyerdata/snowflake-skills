@@ -52,6 +52,10 @@ Design decisions worth knowing:
   confirmed in the delta table, and refuses to run if the grace period isn't shorter than delta
   retention.
 
+- **Every build ends with a build record.** The skill writes a `BUILD_RECORD.md` covering the inputs
+  and decisions, the source contract, every object, how a change flows, what was tested, and a
+  handover checklist ([template](references/build-record-template.md)).
+
 The full specification is in [`references/pattern-design.md`](references/pattern-design.md),
 including why this uses snapshot comparison rather than Streams or Dynamic Tables, and where it
 doesn't apply.
