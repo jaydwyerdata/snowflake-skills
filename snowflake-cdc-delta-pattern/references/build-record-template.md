@@ -36,6 +36,7 @@ not from the pattern in general. Plain language, no em dashes.
 
 ## Rules
 
+- No CLI commands anywhere in the record. Plain SQL files run in Snowsight or Cortex Code only.
 - Never include account or organisation identifiers, credentials, or real data values.
 - Say what was built in this instance, using the instance's real object names.
 - A claim of "tested" must point to a check that was actually run.

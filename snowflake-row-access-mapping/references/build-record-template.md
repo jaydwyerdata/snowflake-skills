@@ -23,9 +23,12 @@ not from the pattern in general. Plain language, no em dashes.
 9. **Open items and next steps.** Anything deferred, with an owner if known.
 10. **Handover checklist.** What a new owner must know or do on day one: where the code lives,
     who owns what, how to rerun the checks, how to roll back.
+    Rerun and rollback steps must be written for a Snowsight worksheet (open each file, run it in
+    order). Never write CLI commands such as `snow sql` or SnowSQL.
 
 ## Rules
 
+- No CLI commands anywhere in the record. Plain SQL files run in Snowsight or Cortex Code only.
 - Never include account or organisation identifiers, credentials, or real data values.
 - Say what was built in this instance, using the instance's real object names.
 - A claim of "tested" must point to a check that was actually run.
