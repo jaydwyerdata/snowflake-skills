@@ -22,6 +22,18 @@ Do not use it when the source has native CDC (Streams), or when changes are high
 
 This pattern is deliberately naive about upstream renames. It does not try to track column lineage or handle schema drift inside the CDC engine. Instead, it relies on the source view being the enforced contract: renames, restructuring, and curation logic happen once, at the view layer, before anything reaches the CDC objects. The destination is assumed to be a system where column names are fixed. That is what makes this pattern durable against upstream schema change without special-case logic. When explaining or documenting this pattern, always lead with this, it is the pattern's actual value, not an implementation detail.
 
+## Execution environment: no CLI required
+
+This skill needs no Snowflake CLI, SnowSQL, drivers or local connection config, and must never ask
+for them. Do not test, probe or set up a CLI connection (no `snow connection test`, no config
+files). Many corporate machines have none installed. Everything is plain SQL, run one of two ways:
+
+- Inside Snowsight or Cortex Code, execute the SQL through the session's own SQL tool.
+- If no SQL execution is available, write the SQL to files and tell the user to paste and run them
+  in a Snowsight worksheet, in order, reporting results back.
+
+If a connection check fails or is unavailable, carry on in worksheet mode. Do not stop.
+
 ## Full reference
 
 `references/pattern-design.md` contains the complete pattern specification: architecture diagram, object inventory, data flow for every step (upsert, delta extraction, snapshot refresh, housekeeping), change detection mechanics, idempotency contract, delta delivery contract, and retention design. Read it in full before generating SQL. Do not improvise steps that contradict it.
@@ -83,6 +95,7 @@ this build. Append a dated section if the file exists. Offer it to the user befo
 
 ## Guardrails
 
+- Never require, test or install a CLI or local connection. Plain SQL only (see Execution environment).
 - Never hard-code a Snowflake organization or account identifier in generated SQL or documentation. Use database/schema names the user supplies, or session context functions.
 - Never silently assume retention values, primary key structure, or delete-handling expectations. Ask.
 - If the user's source view is not yet curated or stakeholder-accepted, flag this as a blocking prerequisite before generating the initial load procedure, the whole pattern depends on that view being the stable contract.

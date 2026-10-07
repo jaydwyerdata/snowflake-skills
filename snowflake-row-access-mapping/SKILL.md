@@ -29,6 +29,18 @@ mapping sees zero rows.
 
 Ask "who populates the key?". If the user is unsure, it is Mode A.
 
+## Execution environment: no CLI required
+
+This skill needs no Snowflake CLI, SnowSQL, drivers or local connection config, and must never ask
+for them. Do not test, probe or set up a CLI connection (no `snow connection test`, no config
+files). Many corporate machines have none installed. Everything is plain SQL, run one of two ways:
+
+- Inside Snowsight or Cortex Code, execute the SQL through the session's own SQL tool.
+- If no SQL execution is available, write the SQL to files and tell the user to paste and run them
+  in a Snowsight worksheet, in order, reporting results back.
+
+If a connection check fails or is unavailable, carry on in worksheet mode. Do not stop.
+
 ## Full reference
 
 `references/pattern-design.md` holds the full specification: object inventory, the policy and why it
@@ -113,6 +125,7 @@ build. Append a dated section if the file exists. Offer it to the user before en
 
 ## Guardrails
 
+- Never require, test or install a CLI or local connection. Plain SQL only (see Execution environment).
 - Never hard-code an organisation or account identifier.
 - Never generate a record ID inside the refresh with a random function such as `UUID_STRING()`: nothing ties a row to the ID it had last time, so every refresh would look like all new rows and every assignment would be lost.
 - Never modify the source table; only read it.
