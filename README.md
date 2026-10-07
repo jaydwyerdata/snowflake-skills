@@ -13,9 +13,13 @@ frontmatter, plus supporting files), the format Snowflake documents for Cortex C
 
 ## Using a skill
 
-**Cortex Code in Snowsight:** in a workspace, upload the skill's folder to
-`.snowflake/cortex/skills/`, start a new Cortex Code chat in that workspace, and invoke it with
-`/` plus the skill name. Workspace skills are only available in the workspace they were added to.
+**Cortex Code in Snowsight, one workspace:** upload the skill's folder to
+`.snowflake/cortex/skills/` in a workspace, start a new Cortex Code chat there, and invoke it with
+`/` plus the skill name. A workspace skill is only available in the workspace it was added to.
+
+**Cortex Code in Snowsight, account-wide:** once loaded in a workspace, share it to the account's
+skill catalog with the built-in `share-skill` skill. Catalog skills appear in the `/` menu across
+workspaces, with access managed by role. (The workspace route is the one tested here.)
 
 **Cortex Code CLI:** copy the folder into a project's `.cortex/skills/` or your user-level
 `~/.snowflake/cortex/skills/`.

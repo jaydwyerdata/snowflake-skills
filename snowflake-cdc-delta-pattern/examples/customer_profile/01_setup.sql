@@ -11,21 +11,22 @@ CREATE WAREHOUSE IF NOT EXISTS CDC_DEMO_WH
   WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
 USE WAREHOUSE CDC_DEMO_WH;
 
--- Upstream data, with upstream's own column names.
-CREATE OR REPLACE TABLE CDC_DEMO.UPSTREAM.CRM_CUSTOMER (
+-- Upstream data for an invented online shop, with upstream's own column names. All names,
+-- addresses and values are fictional.
+CREATE OR REPLACE TABLE CDC_DEMO.UPSTREAM.SHOP_CUSTOMER (
   cust_no      VARCHAR,
   cust_name    VARCHAR,
   email_addr   VARCHAR,
   cust_tier    VARCHAR,
   city         VARCHAR,
-  credit_limit NUMBER(12,2)
+  reward_points NUMBER(10,0)
 );
 
-INSERT INTO CDC_DEMO.UPSTREAM.CRM_CUSTOMER VALUES
-  ('C001', 'Ava Thompson',  'ava@example.com',   'Gold',   'Brisbane',  5000),
-  ('C002', 'Ben Carter',    'ben@example.com',   'Silver', 'Sydney',    2500),
-  ('C003', 'Chloe Nguyen',  'chloe@example.com', 'Bronze', 'Melbourne', 1000),
-  ('C004', 'Dev Patel',     'dev@example.com',   'Silver', 'Perth',     2500),
+INSERT INTO CDC_DEMO.UPSTREAM.SHOP_CUSTOMER VALUES
+  ('C001', 'Ava Thompson',  'ava@example.com',   'Gold',   'Brisbane',  1200),
+  ('C002', 'Ben Carter',    'ben@example.com',   'Silver', 'Sydney',     800),
+  ('C003', 'Chloe Nguyen',  'chloe@example.com', 'Bronze', 'Melbourne',  300),
+  ('C004', 'Dev Patel',     'dev@example.com',   'Silver', 'Perth',      800),
   ('C005', 'Ella Morris',   NULL,                'Bronze', 'Adelaide',  NULL);
 
 -- The contract: curated names the destination expects. Renames upstream are absorbed here, once.
@@ -35,5 +36,5 @@ SELECT cust_no      AS CUSTOMER_ID,
        email_addr   AS EMAIL,
        cust_tier    AS TIER,
        city         AS CITY,
-       credit_limit AS CREDIT_LIMIT
-FROM CDC_DEMO.UPSTREAM.CRM_CUSTOMER;
+       reward_points AS REWARD_POINTS
+FROM CDC_DEMO.UPSTREAM.SHOP_CUSTOMER;

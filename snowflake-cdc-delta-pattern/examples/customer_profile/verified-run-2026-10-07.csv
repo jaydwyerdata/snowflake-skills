@@ -12,7 +12,7 @@ N,CLAIM,EXPECTED,ACTUAL,RESULT
 11,"Day 3 re-run: one successful upsert and one delta, not two",1|1,1|1,PASS
 12,No customer delivered twice in one day,0,0,PASS
 13,Day 4: returning customer logged as INSERT and live again,5|false,5|false,PASS
-14,Day 4: numeric change delivered as a number,7500.00,7500.00,PASS
+14,Day 4: numeric change delivered as a number,2000,2000,PASS
 15,"Numeric NULL left as NULL, not coerced",<NULL>,<NULL>,PASS
 16,Housekeeping hard-purged the delivered delete past grace,1|0,1|0,PASS
 17,Delivered DELETE rows survive the BASE purge,2,2,PASS
