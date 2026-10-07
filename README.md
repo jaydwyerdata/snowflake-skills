@@ -18,8 +18,11 @@ frontmatter, plus supporting files), the format Snowflake documents for Cortex C
 `/` plus the skill name. A workspace skill is only available in the workspace it was added to.
 
 **Cortex Code in Snowsight, account-wide:** once loaded in a workspace, share it to the account's
-skill catalog with the built-in `share-skill` skill. Catalog skills appear in the `/` menu across
-workspaces, with access managed by role. (The workspace route is the one tested here.)
+skill catalog with the built-in `share-skill` skill. It then appears under Skills and plugins and in
+the `/` menu across workspaces. Access is granted like any other Snowflake object: in a trial
+account it was shared to `PUBLIC` for simplicity, but in a real account scope it to the roles or
+users who should be generating these pipelines, since it generates tables, procedures and
+scheduled tasks.
 
 **Cortex Code CLI:** copy the folder into a project's `.cortex/skills/` or your user-level
 `~/.snowflake/cortex/skills/`.

@@ -72,7 +72,8 @@ warehouse, and creates its tasks suspended so nothing runs on a schedule.
 
 ## Verified in Cortex Code
 
-Loaded as a workspace skill in Cortex Code in Snowsight on 7 October 2026 and invoked with
+Loaded as a workspace skill in Cortex Code in Snowsight on 7 October 2026, then shared to the
+account's skill catalog with `share-skill`, where it appears under Skills and plugins. Invoked with
 `/snowflake-cdc-delta-pattern` on a request for a product-data delta table. It read the pattern
 design and the worked example, led with the view-as-contract principle, and started gathering the
 required inputs (source view first) before generating anything, as the skill instructs.
