@@ -1,0 +1,462 @@
+-- Worked example, step 2 of 4: the object set the skill generates for one use case.
+-- Use case: CUSTOMER_PROFILE. Source view: CDC_DEMO.CUSTOMER_FEED.V_CUSTOMER_PROFILE.
+-- Primary key: CUSTOMER_ID (single column; composite keys are out of scope for v1).
+-- Retention: change history 365 days, delta 90 days, soft-delete grace 30 days.
+--
+-- Every procedure takes P_RUN_DATE. Pass NULL for normal scheduled runs (today). Passing a date
+-- lets the walkthrough replay several days in one session, and doubles as a controlled re-run.
+
+USE WAREHOUSE CDC_DEMO_WH;
+
+---------------------------------------------------------------------------------------------------
+-- Tables
+---------------------------------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG (
+  RUN_ID         VARCHAR(36),
+  USE_CASE       VARCHAR(256),
+  PROCEDURE_NAME VARCHAR(256),
+  RUN_TIMESTAMP  TIMESTAMP_TZ,
+  ROWS_INSERTED  INTEGER,
+  ROWS_UPDATED   INTEGER,
+  ROWS_DELETED   INTEGER,
+  ROWS_DELTA     INTEGER,
+  ROWS_PURGED    INTEGER,
+  STATUS         VARCHAR(10),
+  MESSAGE        VARCHAR
+);
+
+CREATE OR REPLACE TABLE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE (
+  CUSTOMER_ID  VARCHAR NOT NULL,
+  FULL_NAME    VARCHAR,
+  EMAIL        VARCHAR,
+  TIER         VARCHAR,
+  CITY         VARCHAR,
+  CREDIT_LIMIT NUMBER(12,2),
+  RECORD_HASH  VARCHAR(32),
+  IS_DELETED   BOOLEAN,
+  DELETED_AT   TIMESTAMP_TZ,
+  UPDATED_AT   TIMESTAMP_TZ
+);
+
+CREATE OR REPLACE TABLE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_SNAPSHOT
+  LIKE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE;
+
+CREATE OR REPLACE TABLE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY (
+  CUSTOMER_ID VARCHAR NOT NULL,
+  CHANGE_DATE TIMESTAMP_TZ,
+  FIELD_NAME  VARCHAR,
+  OLD_VALUE   VARCHAR,
+  NEW_VALUE   VARCHAR,
+  CHANGE_TYPE VARCHAR(6)
+);
+
+CREATE OR REPLACE TABLE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_DELTA (
+  CUSTOMER_ID  VARCHAR NOT NULL,
+  FULL_NAME    VARCHAR,
+  EMAIL        VARCHAR,
+  TIER         VARCHAR,
+  CITY         VARCHAR,
+  CREDIT_LIMIT NUMBER(12,2),
+  ACTION       VARCHAR(6),
+  INSERT_DATE  TIMESTAMP_TZ
+);
+
+---------------------------------------------------------------------------------------------------
+-- SP_CUSTOMER_PROFILE_INITIAL_LOAD: one-time bootstrap. Refuses to run if BASE already has rows.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_INITIAL_LOAD(P_RUN_DATE DATE)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  run_date DATE;
+  run_ts   TIMESTAMP_TZ;
+  existing INTEGER;
+  n_rows   INTEGER;
+BEGIN
+  run_date := COALESCE(P_RUN_DATE, CURRENT_DATE());
+  run_ts   := IFF(run_date = CURRENT_DATE(), CURRENT_TIMESTAMP()::TIMESTAMP_TZ, run_date::TIMESTAMP_TZ);
+
+  SELECT COUNT(*) INTO :existing FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE;
+  IF (existing > 0) THEN
+    RETURN 'Refused: BASE already holds ' || existing || ' rows. Initial load is one-time only.';
+  END IF;
+
+  BEGIN TRANSACTION;
+
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE
+  SELECT CUSTOMER_ID, FULL_NAME, EMAIL, TIER, CITY, CREDIT_LIMIT,
+         MD5(COALESCE(FULL_NAME::VARCHAR, '') || '|' || COALESCE(EMAIL::VARCHAR, '') || '|' ||
+             COALESCE(TIER::VARCHAR, '') || '|' || COALESCE(CITY::VARCHAR, '') || '|' ||
+             COALESCE(CREDIT_LIMIT::VARCHAR, '')),
+         FALSE, NULL, :run_ts
+  FROM CDC_DEMO.CUSTOMER_FEED.V_CUSTOMER_PROFILE;
+  n_rows := SQLROWCOUNT;
+
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_SNAPSHOT
+  SELECT * FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE;
+
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_DELTA
+  SELECT CUSTOMER_ID, COALESCE(FULL_NAME, 'null'), COALESCE(EMAIL, 'null'), COALESCE(TIER, 'null'),
+         COALESCE(CITY, 'null'), CREDIT_LIMIT, 'UPSERT', :run_ts
+  FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE;
+
+  INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+    (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, ROWS_INSERTED, ROWS_DELTA, STATUS, MESSAGE)
+  SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_INITIAL_LOAD', :run_ts,
+         :n_rows, :n_rows, 'SUCCESS', 'Initial load complete';
+
+  COMMIT;
+  RETURN 'Initial load: ' || n_rows || ' rows into BASE, SNAPSHOT and DELTA';
+EXCEPTION
+  WHEN OTHER THEN
+    ROLLBACK;
+    LET msg VARCHAR := SQLERRM;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_INITIAL_LOAD', :run_ts, 'FAILED', :msg;
+    RAISE;
+END;
+$$;
+
+---------------------------------------------------------------------------------------------------
+-- SP_CUSTOMER_PROFILE_UPSERT: compare source to BASE, log field-level changes, merge, soft-delete.
+-- All of it commits together or not at all, and a second successful run for the same date is skipped.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_UPSERT(P_RUN_DATE DATE)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  run_date DATE;
+  run_ts   TIMESTAMP_TZ;
+  already  INTEGER;
+  n_ins    INTEGER DEFAULT 0;
+  n_upd    INTEGER DEFAULT 0;
+  n_del    INTEGER DEFAULT 0;
+BEGIN
+  run_date := COALESCE(P_RUN_DATE, CURRENT_DATE());
+  run_ts   := IFF(run_date = CURRENT_DATE(), CURRENT_TIMESTAMP()::TIMESTAMP_TZ, run_date::TIMESTAMP_TZ);
+
+  -- Idempotency guard.
+  SELECT COUNT(*) INTO :already FROM CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+  WHERE USE_CASE = 'CUSTOMER_PROFILE' AND PROCEDURE_NAME = 'SP_CUSTOMER_PROFILE_UPSERT'
+    AND STATUS = 'SUCCESS' AND RUN_TIMESTAMP::DATE = :run_date;
+  IF (already > 0) THEN
+    RETURN 'Skipped: upsert already succeeded for ' || run_date::VARCHAR;
+  END IF;
+
+  -- Today's source, hashed, with its business fields as an object for field-level comparison.
+  CREATE OR REPLACE TEMPORARY TABLE CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC AS
+  SELECT CUSTOMER_ID, FULL_NAME, EMAIL, TIER, CITY, CREDIT_LIMIT,
+         MD5(COALESCE(FULL_NAME::VARCHAR, '') || '|' || COALESCE(EMAIL::VARCHAR, '') || '|' ||
+             COALESCE(TIER::VARCHAR, '') || '|' || COALESCE(CITY::VARCHAR, '') || '|' ||
+             COALESCE(CREDIT_LIMIT::VARCHAR, '')) AS RECORD_HASH,
+         OBJECT_CONSTRUCT_KEEP_NULL('FULL_NAME', FULL_NAME::VARCHAR, 'EMAIL', EMAIL::VARCHAR,
+             'TIER', TIER::VARCHAR, 'CITY', CITY::VARCHAR, 'CREDIT_LIMIT', CREDIT_LIMIT::VARCHAR) AS FIELDS
+  FROM CDC_DEMO.CUSTOMER_FEED.V_CUSTOMER_PROFILE;
+
+  BEGIN TRANSACTION;
+
+  -- UPDATES: one CHANGE_HISTORY row per field that actually changed, on live (not soft-deleted) rows.
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+  SELECT p.CUSTOMER_ID, :run_ts, f.key,
+         IFF(IS_NULL_VALUE(GET(p.OLD_FIELDS, f.key)), NULL, GET(p.OLD_FIELDS, f.key)::VARCHAR),
+         IFF(IS_NULL_VALUE(f.value), NULL, f.value::VARCHAR),
+         'UPDATE'
+  FROM (
+    SELECT s.CUSTOMER_ID, s.FIELDS AS NEW_FIELDS,
+           OBJECT_CONSTRUCT_KEEP_NULL('FULL_NAME', b.FULL_NAME::VARCHAR, 'EMAIL', b.EMAIL::VARCHAR,
+               'TIER', b.TIER::VARCHAR, 'CITY', b.CITY::VARCHAR, 'CREDIT_LIMIT', b.CREDIT_LIMIT::VARCHAR) AS OLD_FIELDS
+    FROM CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC s
+    JOIN CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE b
+      ON b.CUSTOMER_ID = s.CUSTOMER_ID AND NOT b.IS_DELETED
+    WHERE s.RECORD_HASH <> b.RECORD_HASH
+  ) p,
+  LATERAL FLATTEN(input => p.NEW_FIELDS) f
+  WHERE NOT EQUAL_NULL(GET(p.OLD_FIELDS, f.key), f.value);
+
+  -- INSERTS: new keys, or keys returning after a soft delete. One row per field.
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+  SELECT p.CUSTOMER_ID, :run_ts, f.key, NULL,
+         IFF(IS_NULL_VALUE(f.value), NULL, f.value::VARCHAR),
+         'INSERT'
+  FROM (
+    SELECT s.CUSTOMER_ID, s.FIELDS
+    FROM CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC s
+    LEFT JOIN CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE b ON b.CUSTOMER_ID = s.CUSTOMER_ID
+    WHERE b.CUSTOMER_ID IS NULL OR b.IS_DELETED
+  ) p,
+  LATERAL FLATTEN(input => p.FIELDS) f;
+
+  -- MERGE into BASE: changed and revived rows update, new rows insert.
+  MERGE INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE b
+  USING CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC s ON b.CUSTOMER_ID = s.CUSTOMER_ID
+  WHEN MATCHED AND (b.IS_DELETED OR b.RECORD_HASH <> s.RECORD_HASH) THEN UPDATE SET
+    FULL_NAME = s.FULL_NAME, EMAIL = s.EMAIL, TIER = s.TIER, CITY = s.CITY,
+    CREDIT_LIMIT = s.CREDIT_LIMIT, RECORD_HASH = s.RECORD_HASH,
+    IS_DELETED = FALSE, DELETED_AT = NULL, UPDATED_AT = :run_ts
+  WHEN NOT MATCHED THEN INSERT
+    (CUSTOMER_ID, FULL_NAME, EMAIL, TIER, CITY, CREDIT_LIMIT, RECORD_HASH, IS_DELETED, DELETED_AT, UPDATED_AT)
+    VALUES (s.CUSTOMER_ID, s.FULL_NAME, s.EMAIL, s.TIER, s.CITY, s.CREDIT_LIMIT, s.RECORD_HASH,
+            FALSE, NULL, :run_ts);
+
+  -- DELETES: live BASE keys no longer in the source. One ALL_FIELDS row each.
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+  SELECT b.CUSTOMER_ID, :run_ts, 'ALL_FIELDS', NULL, NULL, 'DELETE'
+  FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE b
+  LEFT JOIN CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC s ON s.CUSTOMER_ID = b.CUSTOMER_ID
+  WHERE NOT b.IS_DELETED AND s.CUSTOMER_ID IS NULL;
+
+  -- Soft delete, keeping last-known values for the delta step.
+  UPDATE CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE
+  SET IS_DELETED = TRUE, DELETED_AT = :run_ts, UPDATED_AT = :run_ts
+  WHERE NOT IS_DELETED
+    AND CUSTOMER_ID NOT IN (SELECT CUSTOMER_ID FROM CDC_DEMO.CUSTOMER_FEED.TMP_CUSTOMER_PROFILE_SRC);
+
+  SELECT COUNT(DISTINCT IFF(CHANGE_TYPE = 'INSERT', CUSTOMER_ID, NULL)),
+         COUNT(DISTINCT IFF(CHANGE_TYPE = 'UPDATE', CUSTOMER_ID, NULL)),
+         COUNT(DISTINCT IFF(CHANGE_TYPE = 'DELETE', CUSTOMER_ID, NULL))
+    INTO :n_ins, :n_upd, :n_del
+  FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+  WHERE CHANGE_DATE = :run_ts;
+
+  INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+    (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, ROWS_INSERTED, ROWS_UPDATED, ROWS_DELETED, STATUS, MESSAGE)
+  SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_UPSERT', :run_ts,
+         :n_ins, :n_upd, :n_del, 'SUCCESS', 'Upsert complete';
+
+  COMMIT;
+  RETURN 'Upsert ' || run_date::VARCHAR || ': ' || n_ins || ' inserted, ' || n_upd || ' updated, '
+         || n_del || ' deleted';
+EXCEPTION
+  WHEN OTHER THEN
+    ROLLBACK;
+    LET msg VARCHAR := SQLERRM;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_UPSERT', :run_ts, 'FAILED', :msg;
+    RAISE;
+END;
+$$;
+
+---------------------------------------------------------------------------------------------------
+-- SP_CUSTOMER_PROFILE_DELTA: deliver the day's changed keys as full rows, tagged UPSERT or DELETE.
+-- Guarded like the upsert, so a re-run cannot append the same day twice.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_DELTA(P_RUN_DATE DATE)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  run_date  DATE;
+  upsert_ts TIMESTAMP_TZ;
+  already   INTEGER;
+  n_rows    INTEGER DEFAULT 0;
+BEGIN
+  run_date := COALESCE(P_RUN_DATE, CURRENT_DATE());
+
+  SELECT COUNT(*) INTO :already FROM CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+  WHERE USE_CASE = 'CUSTOMER_PROFILE' AND PROCEDURE_NAME = 'SP_CUSTOMER_PROFILE_DELTA'
+    AND STATUS = 'SUCCESS' AND RUN_TIMESTAMP::DATE = :run_date;
+  IF (already > 0) THEN
+    RETURN 'Skipped: delta already delivered for ' || run_date::VARCHAR;
+  END IF;
+
+  -- Tie the delta to the exact upsert run it is delivering.
+  SELECT MAX(RUN_TIMESTAMP) INTO :upsert_ts FROM CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+  WHERE USE_CASE = 'CUSTOMER_PROFILE' AND PROCEDURE_NAME = 'SP_CUSTOMER_PROFILE_UPSERT'
+    AND STATUS = 'SUCCESS' AND RUN_TIMESTAMP::DATE = :run_date;
+  IF (upsert_ts IS NULL) THEN
+    LET err VARCHAR := 'No successful upsert found for ' || run_date::VARCHAR;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_DELTA', :run_date::TIMESTAMP_TZ, 'FAILED', :err;
+    RETURN err;
+  END IF;
+
+  BEGIN TRANSACTION;
+
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_DELTA
+  SELECT b.CUSTOMER_ID,
+         COALESCE(b.FULL_NAME, 'null'), COALESCE(b.EMAIL, 'null'), COALESCE(b.TIER, 'null'),
+         COALESCE(b.CITY, 'null'), b.CREDIT_LIMIT,
+         IFF(c.HAS_DELETE, 'DELETE', 'UPSERT'),
+         :upsert_ts
+  FROM (
+    SELECT CUSTOMER_ID, BOOLOR_AGG(CHANGE_TYPE = 'DELETE') AS HAS_DELETE
+    FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+    WHERE CHANGE_DATE = :upsert_ts
+    GROUP BY CUSTOMER_ID
+  ) c
+  JOIN CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE b ON b.CUSTOMER_ID = c.CUSTOMER_ID;
+  n_rows := SQLROWCOUNT;
+
+  INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+    (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, ROWS_DELTA, STATUS, MESSAGE)
+  SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_DELTA', :upsert_ts,
+         :n_rows, 'SUCCESS', 'Delta delivered';
+
+  COMMIT;
+  RETURN 'Delta ' || run_date::VARCHAR || ': ' || n_rows || ' rows';
+EXCEPTION
+  WHEN OTHER THEN
+    ROLLBACK;
+    LET msg VARCHAR := SQLERRM;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_DELTA', :run_date::TIMESTAMP_TZ, 'FAILED', :msg;
+    RAISE;
+END;
+$$;
+
+---------------------------------------------------------------------------------------------------
+-- SP_CUSTOMER_PROFILE_SNAPSHOT: truncate and reload, naturally idempotent.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_SNAPSHOT(P_RUN_DATE DATE)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  run_date DATE;
+  run_ts   TIMESTAMP_TZ;
+  n_rows   INTEGER DEFAULT 0;
+BEGIN
+  run_date := COALESCE(P_RUN_DATE, CURRENT_DATE());
+  run_ts   := IFF(run_date = CURRENT_DATE(), CURRENT_TIMESTAMP()::TIMESTAMP_TZ, run_date::TIMESTAMP_TZ);
+
+  BEGIN TRANSACTION;
+  DELETE FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_SNAPSHOT;
+  INSERT INTO CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_SNAPSHOT
+  SELECT * FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE;
+  n_rows := SQLROWCOUNT;
+  INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+    (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+  SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_SNAPSHOT', :run_ts, 'SUCCESS',
+         'Snapshot reloaded: ' || :n_rows || ' rows';
+  COMMIT;
+  RETURN 'Snapshot ' || run_date::VARCHAR || ': ' || n_rows || ' rows';
+EXCEPTION
+  WHEN OTHER THEN
+    ROLLBACK;
+    LET msg VARCHAR := SQLERRM;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_SNAPSHOT', :run_ts, 'FAILED', :msg;
+    RAISE;
+END;
+$$;
+
+---------------------------------------------------------------------------------------------------
+-- SP_CUSTOMER_PROFILE_HOUSEKEEPING: retention, on its own weekly schedule.
+-- A soft-deleted BASE row is only hard-purged once its DELETE row is confirmed in DELTA, so a
+-- failed delta run can never lose a delete. That only works if the grace period is shorter than
+-- delta retention, which is checked here.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE PROCEDURE CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_HOUSEKEEPING(P_RUN_DATE DATE)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+  history_retention_days INTEGER DEFAULT 365;
+  delta_retention_days   INTEGER DEFAULT 90;
+  grace_period_days      INTEGER DEFAULT 30;
+  run_date DATE;
+  run_ts   TIMESTAMP_TZ;
+  n_hist   INTEGER DEFAULT 0;
+  n_delta  INTEGER DEFAULT 0;
+  n_base   INTEGER DEFAULT 0;
+BEGIN
+  run_date := COALESCE(P_RUN_DATE, CURRENT_DATE());
+  run_ts   := IFF(run_date = CURRENT_DATE(), CURRENT_TIMESTAMP()::TIMESTAMP_TZ, run_date::TIMESTAMP_TZ);
+
+  IF (grace_period_days >= delta_retention_days) THEN
+    RETURN 'Refused: grace period must be shorter than delta retention';
+  END IF;
+
+  BEGIN TRANSACTION;
+
+  DELETE FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_CHANGE_HISTORY
+  WHERE CHANGE_DATE < DATEADD(day, -1 * :history_retention_days, :run_date);
+  n_hist := SQLROWCOUNT;
+
+  DELETE FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_DELTA
+  WHERE INSERT_DATE < DATEADD(day, -1 * :delta_retention_days, :run_date);
+  n_delta := SQLROWCOUNT;
+
+  DELETE FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_BASE
+  USING (SELECT CUSTOMER_ID, MAX(INSERT_DATE) AS LAST_DELETE_DELIVERED
+         FROM CDC_DEMO.CUSTOMER_FEED.CUSTOMER_PROFILE_DELTA
+         WHERE ACTION = 'DELETE'
+         GROUP BY CUSTOMER_ID) d
+  WHERE CUSTOMER_PROFILE_BASE.IS_DELETED
+    AND CUSTOMER_PROFILE_BASE.DELETED_AT < DATEADD(day, -1 * :grace_period_days, :run_date)
+    AND d.CUSTOMER_ID = CUSTOMER_PROFILE_BASE.CUSTOMER_ID
+    AND d.LAST_DELETE_DELIVERED >= CUSTOMER_PROFILE_BASE.DELETED_AT;
+  n_base := SQLROWCOUNT;
+
+  INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+    (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, ROWS_PURGED, STATUS, MESSAGE)
+  SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_HOUSEKEEPING', :run_ts,
+         :n_hist + :n_delta + :n_base, 'SUCCESS',
+         'Purged ' || :n_hist || ' history, ' || :n_delta || ' delta, ' || :n_base || ' base rows';
+
+  COMMIT;
+  RETURN 'Housekeeping ' || run_date::VARCHAR || ': ' || n_hist || ' history, ' || n_delta
+         || ' delta, ' || n_base || ' base rows purged';
+EXCEPTION
+  WHEN OTHER THEN
+    ROLLBACK;
+    LET msg VARCHAR := SQLERRM;
+    INSERT INTO CDC_DEMO.CDC_AUDIT.CDC_RUN_LOG
+      (RUN_ID, USE_CASE, PROCEDURE_NAME, RUN_TIMESTAMP, STATUS, MESSAGE)
+    SELECT UUID_STRING(), 'CUSTOMER_PROFILE', 'SP_CUSTOMER_PROFILE_HOUSEKEEPING', :run_ts, 'FAILED', :msg;
+    RAISE;
+END;
+$$;
+
+---------------------------------------------------------------------------------------------------
+-- Tasks. Created SUSPENDED: the walkthrough calls the procedures directly, so nothing runs on a
+-- schedule or spends credits. To go live, resume the child tasks first, then the root.
+---------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE TASK CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_CDC
+  WAREHOUSE = CDC_DEMO_WH
+  SCHEDULE = 'USING CRON 0 5 * * * Australia/Brisbane'
+AS SELECT 'daily CDC chain start';
+
+CREATE OR REPLACE TASK CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_UPSERT
+  WAREHOUSE = CDC_DEMO_WH
+  AFTER CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_CDC
+AS CALL CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_UPSERT(NULL);
+
+CREATE OR REPLACE TASK CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_DELTA
+  WAREHOUSE = CDC_DEMO_WH
+  AFTER CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_UPSERT
+AS CALL CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_DELTA(NULL);
+
+CREATE OR REPLACE TASK CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_SNAPSHOT
+  WAREHOUSE = CDC_DEMO_WH
+  AFTER CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_DELTA
+AS CALL CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_SNAPSHOT(NULL);
+
+CREATE OR REPLACE TASK CDC_DEMO.CUSTOMER_FEED.TSK_CUSTOMER_PROFILE_HOUSEKEEPING
+  WAREHOUSE = CDC_DEMO_WH
+  SCHEDULE = 'USING CRON 0 6 * * 0 Australia/Brisbane'
+AS CALL CDC_DEMO.CUSTOMER_FEED.SP_CUSTOMER_PROFILE_HOUSEKEEPING(NULL);

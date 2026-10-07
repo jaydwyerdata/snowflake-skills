@@ -1,0 +1,8 @@
+# Demo-prep and recording assets, kept local
+demo/
+demo-assets/
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

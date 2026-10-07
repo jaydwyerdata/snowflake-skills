@@ -1,0 +1,20 @@
+N,CLAIM,EXPECTED,ACTUAL,RESULT
+1,Initial load seeded 5 UPSERT rows,5,5,PASS
+2,"Day 1: one field-level UPDATE row, on TIER",TIER,TIER,PASS
+3,Day 1: new customer logged as 5 INSERT rows (one per field),5,5,PASS
+4,Day 1: 2 UPSERT rows delivered,2,2,PASS
+5,Day 2: upstream rename produced no changes,0,0,PASS
+6,Day 2: upsert still logged SUCCESS,SUCCESS,SUCCESS,PASS
+7,Day 3: 2 DELETE rows delivered,2,2,PASS
+8,Day 3: DELETE row carries last-known values,Chloe Nguyen|Melbourne,Chloe Nguyen|Melbourne,PASS
+9,Day 3: NULL email delivered as literal null,null,null,PASS
+10,Day 3: history records the old email and a NULL new value,dev@example.com|<NULL>,dev@example.com|<NULL>,PASS
+11,"Day 3 re-run: one successful upsert and one delta, not two",1|1,1|1,PASS
+12,No customer delivered twice in one day,0,0,PASS
+13,Day 4: returning customer logged as INSERT and live again,5|false,5|false,PASS
+14,Day 4: numeric change delivered as a number,7500.00,7500.00,PASS
+15,"Numeric NULL left as NULL, not coerced",<NULL>,<NULL>,PASS
+16,Housekeeping hard-purged the delivered delete past grace,1|0,1|0,PASS
+17,Delivered DELETE rows survive the BASE purge,2,2,PASS
+18,Total delta rows: 5 + 2 + 0 + 3 + 2,12,12,PASS
+19,No FAILED runs logged,0,0,PASS
