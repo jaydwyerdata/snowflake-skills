@@ -9,16 +9,18 @@ frontmatter, plus supporting files), the format Snowflake documents for Cortex C
 
 | Skill | What it does | Verified |
 |---|---|---|
-| [snowflake-cdc-delta-pattern](snowflake-cdc-delta-pattern/) | Snapshot-based change data capture that turns a curated view into an append-only, action-tagged delta table for reverse ETL, with field-level change history, deletes and retention built in | Worked example run live in a Snowflake trial account, 19 of 19 checks passing (7 October 2026) |
+| [snowflake-cdc-delta-pattern](snowflake-cdc-delta-pattern/) | Snapshot-based change data capture that turns a curated view into an append-only, action-tagged delta table for reverse ETL, with field-level change history, deletes and retention built in | Worked example run live in a Snowflake trial account, 19 of 19 checks passing; loaded and invoked in Cortex Code in Snowsight (7 October 2026) |
 
 ## Using a skill
 
-Copy a skill's folder into a project's `.cortex/skills/` folder, or your user-level skills folder,
-and the agent picks it up from its `description`. The skills are plain Markdown and SQL, so they can
-also be read and applied by hand.
+**Cortex Code in Snowsight:** in a workspace, upload the skill's folder to
+`.snowflake/cortex/skills/`, start a new Cortex Code chat in that workspace, and invoke it with
+`/` plus the skill name. Workspace skills are only available in the workspace they were added to.
 
-The skills follow the documented `SKILL.md` structure, but loading them inside Cortex Code itself
-has not been tested yet. What has been verified is the SQL each one produces, run live.
+**Cortex Code CLI:** copy the folder into a project's `.cortex/skills/` or your user-level
+`~/.snowflake/cortex/skills/`.
+
+The skills are plain Markdown and SQL, so they can also be read and applied by hand.
 
 ## Principles
 

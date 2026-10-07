@@ -70,10 +70,17 @@ To run it yourself: run `01_setup.sql` to `04_assertions.sql` in order in a work
 `99_teardown.sql` to remove everything. It uses its own `CDC_DEMO` database and an extra-small
 warehouse, and creates its tasks suspended so nothing runs on a schedule.
 
+## Verified in Cortex Code
+
+Loaded as a workspace skill in Cortex Code in Snowsight on 7 October 2026 and invoked with
+`/snowflake-cdc-delta-pattern` on a request for a product-data delta table. It read the pattern
+design and the worked example, led with the view-as-contract principle, and started gathering the
+required inputs (source view first) before generating anything, as the skill instructs.
+
 ## Known limits (v1)
 
 - Single-column primary keys only. Expose a surrogate key in the source view if the natural key is
   composite.
 - Daily batch cadence. For near-real-time change, use Streams or Dynamic Tables.
-- Loading as a Cortex Code skill follows the documented `SKILL.md` format but hasn't been tested
-  inside Cortex Code yet.
+- Tested in Cortex Code in Snowsight by explicit invocation (`/snowflake-cdc-delta-pattern`). Whether
+  it triggers on its own from a plain request, without the slash command, hasn't been tested.
