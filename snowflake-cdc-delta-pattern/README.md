@@ -24,6 +24,10 @@ Instead it sits between two contracts that don't move:
 
 Everything in between only compares what the view says today with what it said yesterday.
 
+### Solution diagram
+
+![Snapshot CDC solution diagram](examples/customer_profile/solution-diagram.png)
+
 ## What it builds
 
 For one use case, the skill generates four tables, five procedures and a task graph:

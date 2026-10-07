@@ -92,4 +92,5 @@ this build. Append a dated section if the file exists. Offer it to the user befo
 
 - `references/pattern-design.md`: full pattern specification (architecture, all four+one procedures in detail, retention design, observability, scope limits, and why not Streams or Dynamic Tables). Read before generating any SQL.
 - `references/build-record-template.md`: the build record to write at the end.
+- `examples/customer_profile/solution-diagram.png`: the solution diagram for the worked example.
 - `examples/customer_profile/`: a worked example (setup, object set, a five-day walkthrough and 19 PASS/FAIL assertions), run live in a Snowflake trial account on 7 October 2026.

@@ -46,9 +46,6 @@ a CSV assigns them.
 
 Everything else is identical: policy, soft delete, refresh, offboarding, audit, validation.
 
-Solution diagrams: [Mode A](../examples/keyed_column/solution-diagram.png) and
-[Mode B](../examples/service_tickets/solution-diagram.png).
-
 ---
 
 ## 3. Why There Is a Governed Copy
@@ -67,6 +64,32 @@ resolve that first; the refresh cannot tell a changed row from a new one without
 
 If the access team owns the table outright and nobody else can replace it, the copy can be skipped
 and the policy attached directly. The default is to keep it.
+
+### Choosing the record ID
+
+The refresh can only match a row to the copy if its ID is unique and does not change. Check first:
+
+```sql
+SELECT COUNT(*) AS rows, COUNT(DISTINCT <id or id columns>) AS distinct_ids,
+       COUNT_IF(<id> IS NULL) AS null_ids
+FROM <source>;
+```
+
+Rows must equal distinct IDs, with no NULLs. Then, in order:
+
+1. **One column that passes.** Use it.
+2. **A composite that passes** (for example a timestamp and a name). Build a deterministic surrogate in
+   the refresh, such as a hash of the columns joined with a delimiter and explicit NULL handling, and
+   use it as the record ID. It is only as stable as its columns: if any of them can be corrected
+   upstream, the record will look new and lose its assignment. Mode A tolerates this best, because
+   analysts never handle the ID. Mode B does not, because the CSV lists it and a hash is unreadable.
+3. **Duplicates, NULLs, editable columns, or any doubt.** Recommend that the data team assigns a
+   unique ID once, when a record is first loaded (a UUID is fine), and never changes it. This is the
+   only case where a UUID helps, and it must come from the source, not from the refresh.
+
+Never generate a random ID in the refresh. The ID exists to recognise the same record next time, and a
+fresh random value is by definition different next time: every refresh would look like all new rows
+and every assignment would be lost.
 
 ### The refresh
 
@@ -234,7 +257,9 @@ step is worth considering.
 
 ## 11. Known Limits
 
-- One mapping key column per table. Multi-dimensional rules need a composite key.
+- One mapping key column per table, holding one value per row. A multi-valued column (for example a
+  comma-separated tag list) needs splitting into a bridge table, which is not supported here.
+  Multi-dimensional rules need a composite key.
 - One protected table per instance. Protecting several tables with the same mapping means one governed
   copy and policy per table, sharing the mapping, and extending the onboarding grants.
 - The key check rejects keys with no live row; onboarding access ahead of data arriving needs that

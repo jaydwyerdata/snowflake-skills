@@ -46,8 +46,8 @@ Confirm every item with the user before generating anything. Do not guess; ask.
 |---|---|
 | Mode | A or B, as above. |
 | Source table (fully qualified) | The table the data team owns. It must already exist. The skill only ever reads it. |
-| Record ID column | Needed in both modes: a stable ID, the same record keeps the same ID across rebuilds. The refresh merges on it. In Mode B it is also what the CSV lists. If there is no stable ID, stop and resolve that first. |
-| Mapping key column | Mode A: the existing column. Mode B: the name for the new key column on the governed copy. Confirm what happens to rows where it is NULL (default: visible to nobody but the exempt roles). |
+| Record ID column | Needed in both modes: a stable, unique ID, so the same record keeps the same ID across rebuilds. The refresh merges on it. Check, never assume: count duplicates and NULLs (for a composite, group by the whole combination) and show the user the result. Then follow the ladder in `references/pattern-design.md` section 3: a single column that passes is used as is; a composite that passes becomes a deterministic hash surrogate, with the caveat that it is only as stable as its columns; anything else, or any doubt, means recommending that the data team assigns a unique ID once, when a record is first loaded (a UUID is fine), and never changes it. Never generate a random ID inside the refresh. In Mode B the CSV lists this ID, so it must be readable by analysts; a hash is not. |
+| Mapping key column | Mode A: the existing column. Mode B: the name for the new key column on the governed copy. Confirm what happens to rows where it is NULL (default: visible to nobody but the exempt roles). The column must hold exactly one value per row. A column that can hold a list (comma-separated tags, for example) cannot be used as it is: ask for a single-valued column. A bridge table of (record ID, key) rows is not supported in this version. |
 | Key cardinality | Each row has one key. One role seeing many keys, and one key shared by several roles, are both supported; ask which the user expects so the walkthrough tests it. |
 | Mapping key format | For example capitals separated by underscores, or numeric only. Becomes `KEY_PATTERN` in `ACCESS_CONFIG`; a CSV row breaking it rejects the whole file. |
 | Role naming convention | For example `DIVISION_<KEY>_ROLE`. Becomes `ROLE_PATTERN`, so a badly named role is rejected rather than created. |
@@ -114,7 +114,9 @@ build. Append a dated section if the file exists. Offer it to the user before en
 ## Guardrails
 
 - Never hard-code an organisation or account identifier.
+- Never generate a record ID inside the refresh with a random function such as `UUID_STRING()`: nothing ties a row to the ID it had last time, so every refresh would look like all new rows and every assignment would be lost.
 - Never modify the source table; only read it.
+- Never accept a multi-valued key column or an unverified record ID. Run the checks and show the results.
 - Never give consumer roles `USAGE` on the governance schema or write access to the mapping table.
 - Never build role names into dynamic SQL without validating them against the agreed convention.
 - Never grant `MANAGE GRANTS` to the admin role; ownership of the roles it creates is enough.
