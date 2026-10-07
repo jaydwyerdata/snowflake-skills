@@ -109,6 +109,11 @@ the pattern in their own account before relying on it. Every role check must run
 `USE SECONDARY ROLES NONE`. The teardown must reclaim ownership before dropping, because the admin
 role owns the database, warehouse and roles.
 
+When the user runs the checks against their own real table, also generate `05_post_test_cleanup.sql`.
+It removes only what the tests created (test mappings, test roles, phantom rows, staged test files)
+and finishes by confirming the live row count and the mapping count, so the instance is left clean.
+It must never modify the source table. Mention it and the run order (03, 04, 05) in the build record.
+
 ### Step 5: Explain before handing off
 
 Point the user to `references/operating-procedures.md`, adapted to their names. Summarise: where the

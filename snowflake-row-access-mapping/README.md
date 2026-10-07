@@ -97,6 +97,10 @@ singly and in bulk. Each ends in PASS/FAIL assertions, one row per claim.
 To run one: run `99_teardown.sql`, then `01_setup.sql` to `04_assertions.sql` in order in one worksheet
 session as `ACCOUNTADMIN`.
 
+The pattern has also been run against a real 5,000-row table in a locked-down corporate environment
+with no CLI installed: plain SQL in Snowsight and Cortex Code only, ending in a generated build
+record and a clean-up script. (Table and account details deliberately omitted.)
+
 ## Out of scope
 
 Assigning roles to users, warehouse access and authentication are each consumer's own onboarding
