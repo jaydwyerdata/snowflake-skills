@@ -1,0 +1,35 @@
+N,CLAIM,EXPECTED,ACTUAL,RESULT
+1,"Clean file: 10 records assigned, 4 mappings, 3 roles","Assigned 10 records, onboarded 4 mappings, created 3 roles from request_01.csv","Assigned 10 records, onboarded 4 mappings, created 3 roles from request_01.csv",PASS
+2,Re-running the same file changes nothing,"Assigned 0 records, onboarded 0 mappings, created 0 roles from request_01.csv","Assigned 0 records, onboarded 0 mappings, created 0 roles from request_01.csv",PASS
+3,North team sees only NORTH,NORTH,NORTH,PASS
+4,North team sees all 4 NORTH rows,4,4,PASS
+5,"One role, many keys: south team sees EAST and SOUTH","EAST,SOUTH","EAST,SOUTH",PASS
+6,South team sees 6 rows (3 + 3),6,6,PASS
+7,"One key, many roles: east team sees EAST (3 rows)",EAST|3,EAST|3,PASS
+8,SELECT granted but no mapping: zero rows,0,0,PASS
+9,Access admin is exempt from the policy: sees all 12 rows,12,12,PASS
+10,"Auditor exemption sees all 12 rows, unassigned included",12,12,PASS
+11,A viewer cannot write to the mapping table,DENIED,DENIED,PASS
+12,"Non-compliant file rejected whole, nothing applied","Rejected request_02.csv: 6 of 7 rows failed validation, nothing applied","Rejected request_02.csv: 6 of 7 rows failed validation, nothing applied",PASS
+13,"Rejected file left no trace: no WEST role, T-1001 still NORTH, 2 rows still unassigned",0|NORTH|2,0|NORTH|2,PASS
+14,Each failing row logged with its reason,Mapping key breaks the key format|Record ID not found in the data|Record listed with more than one key|Record listed with more than one key|Role name breaks the naming convention|Role name breaks the naming convention,Mapping key breaks the key format|Record ID not found in the data|Record listed with more than one key|Record listed with more than one key|Role name breaks the naming convention|Role name breaks the naming convention,PASS
+15,Consumers cannot read the pipeline team's table directly,DENIED,DENIED,PASS
+16,"SYSADMIN inherits viewer roles: sees mapped keys, not unassigned rows","EAST,NORTH,SOUTH","EAST,NORTH,SOUTH",PASS
+17,Empty source (half-built rebuild): refresh refused,"Refused: source is empty, governed copy left unchanged","Refused: source is empty, governed copy left unchanged",PASS
+18,Governed copy intact after the refused refresh,12,12,PASS
+19,Pipeline CREATE OR REPLACE did not touch assignments or the policy,4,4,PASS
+20,Refresh merges the rebuilt source,"Refreshed: 1 new, 1 changed, 1 removed, 0 restored","Refreshed: 1 new, 1 changed, 1 removed, 0 restored",PASS
+21,"After refresh: assignments kept, changed data applied, new row invisible until assigned",4|Reopened,4|Reopened,PASS
+22,A row removed from the source is hidden from viewers (south 6 to 5),5,5,PASS
+23,"New row assigned from CSV, visible to north","Assigned 1 records, onboarded 0 mappings, created 0 roles from request_03.csv|5","Assigned 1 records, onboarded 0 mappings, created 0 roles from request_03.csv|5",PASS
+24,"Soft delete: the removed row is kept with its key, only hidden",SOUTH|removed,SOUTH|removed,PASS
+25,"Record returns to the source: restored with its key, no CSV needed","Refreshed: 0 new, 0 changed, 0 removed, 1 restored|6","Refreshed: 0 new, 0 changed, 0 removed, 1 restored|6",PASS
+26,Bulk offboard applied,Offboarded 1 mappings from offboard_01.csv,Offboarded 1 mappings from offboard_01.csv,PASS
+27,Offboard file naming a non-existent mapping rejected whole,"Rejected offboard_02.csv: 1 of 2 rows failed validation, nothing removed","Rejected offboard_02.csv: 1 of 2 rows failed validation, nothing removed",PASS
+28,Rejected offboard file left the valid mapping in place,1,1,PASS
+29,Offboarding EAST from south team takes effect immediately,SOUTH,SOUTH,PASS
+30,The other role sharing EAST keeps it,EAST,EAST,PASS
+31,Single offboard dropped the unused north role,Removed 1 mapping; role dropped|0,Removed 1 mapping; role dropped|0,PASS
+32,Offboarding never deletes data: the 5 NORTH rows remain,5,5,PASS
+33,"Every grant, revoke, assignment and refresh is audited",4|2|11|4,4|2|11|4,PASS
+34,Injection attempt only logged; source table intact,1|13,1|13,PASS

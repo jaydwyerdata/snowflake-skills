@@ -10,6 +10,7 @@ frontmatter, plus supporting files), the format Snowflake documents for Cortex C
 | Skill | What it does | Verified |
 |---|---|---|
 | [snowflake-cdc-delta-pattern](snowflake-cdc-delta-pattern/) | Snapshot-based change data capture that turns a curated view into an append-only, action-tagged delta table for reverse ETL, with field-level change history, deletes and retention built in | Worked example run live in a Snowflake trial account, 19 of 19 checks passing; loaded and invoked in Cortex Code in Snowsight (7 October 2026) |
+| [snowflake-row-access-mapping](snowflake-row-access-mapping/) | Row-level security for one shared table: a mapping table and row access policy decide which roles see which rows, access is onboarded and offboarded from an analyst's CSV with validation, rejection logging and an audit trail, and a governed copy keeps it all intact when the table's owner rebuilds the source. Two modes: key already in the data, or business-assigned | Both worked examples run live in a Snowflake trial account: 31 of 31 and 34 of 34 checks passing (7 October 2026) |
 
 ## Using a skill
 
@@ -35,6 +36,7 @@ The skills are plain Markdown and SQL, so they can also be read and applied by h
   the user gives, or from session context.
 - **Ask, don't assume.** Retention windows, keys and delete handling are confirmed with the user,
   never silently defaulted.
+- **Leave a documentation trail.** Every skill ends by writing a build record: what was built, why, how it was verified and how to hand it over.
 - **Say when not to use it.** Each skill names the cases where a native Snowflake feature is the
   better answer.
 
