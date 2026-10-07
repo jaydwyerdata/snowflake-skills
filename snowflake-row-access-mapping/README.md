@@ -97,9 +97,10 @@ singly and in bulk. Each ends in PASS/FAIL assertions, one row per claim.
 To run one: run `99_teardown.sql`, then `01_setup.sql` to `04_assertions.sql` in order in one worksheet
 session as `ACCOUNTADMIN`.
 
-The skill has also been invoked end to end in Cortex Code against a separate 5,000-row customer
-table in a trial account (not one of the worked examples). It needs no CLI: plain SQL in Snowsight and
-Cortex Code only, ending in a generated build record and a clean-up script.
+The skill has also been invoked end to end in Cortex Code (CLI, run locally) against a separate
+5,000-row customer table of invented data in a trial account (not one of the worked examples). It
+generated the objects, its own checks (26 passing), a clean-up script and a build record. The skill
+itself needs no CLI: it is plain SQL, and has not yet been exercised in Snowsight-only Cortex Code.
 
 ## Out of scope
 
