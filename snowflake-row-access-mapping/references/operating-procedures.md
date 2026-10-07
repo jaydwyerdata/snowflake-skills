@@ -209,6 +209,9 @@ Expect `Refreshed: N new, N changed, N removed, N restored`.
   visible as soon as their key is mapped.
 - A refresh never adds, changes or removes a mapping. Only offboarding removes mappings.
 
+The schedule is in `Australia/Sydney` time by default and follows daylight saving; change it with
+`ALTER TASK ... SET SCHEDULE = 'USING CRON <cron> <timezone>'`.
+
 To start or pause the schedule: `ALTER TASK RAP_DEMO.GOVERNANCE.TSK_REFRESH_SERVICE_TICKETS RESUME;`
 (or `SUSPEND`). The task is created suspended.
 

@@ -39,7 +39,7 @@ Before generating anything, confirm every input in this table with the user. Do 
 | Primary key column | Yes | Single column only in v1. If the natural key is composite, stop and ask the user to expose one surrogate key column in the source view; do not generate composite-key SQL. |
 | Target database and schema | Yes | Never hard-code a Snowflake organization or account identifier anywhere in generated SQL, use context (`CURRENT_DATABASE()`, session context, or explicit user-supplied names) instead. |
 | Warehouse | Yes | |
-| Daily cron schedule and timezone | Yes | Drives the root daily task. |
+| Daily cron schedule and timezone | Yes | Drives the root daily task. Default the timezone to `Australia/Sydney`, not UTC, and write the schedule as `USING CRON <cron> Australia/Sydney`; confirm it with the user, and note that it follows daylight saving. |
 | Housekeeping cron schedule | Yes | Independent of the daily chain, weekly is a reasonable default, confirm with user. |
 | Change history retention (days) | Yes | Default suggestion: 365. Confirm, do not silently assume. |
 | Delta retention (days) | Yes | Default suggestion: 90. This is also the practical backfill window, explain that tradeoff to the user. |

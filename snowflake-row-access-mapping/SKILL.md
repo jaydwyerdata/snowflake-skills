@@ -55,7 +55,7 @@ Confirm every item with the user before generating anything. Do not guess; ask.
 | Role hierarchy | Default: grant each viewer role to `SYSADMIN`. State the consequence: because the policy uses `IS_ROLE_IN_SESSION`, anyone using `SYSADMIN` or `ACCOUNTADMIN` inherits every viewer role and sees all mapped rows. Confirm, or offer the stricter variant in the reference. |
 | Exempt (audit) role | Optional role that sees every row. Default: none. |
 | Offboarding default | When a role maps to nothing: drop it, or keep it and revoke its read grant. |
-| Refresh schedule | Cron for the refresh task, after the data team's load. It can always be run on demand. Created suspended until the user is ready. |
+| Refresh schedule | Cron for the refresh task, after the data team's load. Default the timezone to `Australia/Sydney`, not UTC, written as `USING CRON <cron> Australia/Sydney`; confirm the time and timezone with the user, and note that it follows daylight saving. It can always be run on demand. Created suspended until the user is ready. |
 | Who owns the table | If the user owns the table outright and nobody can `CREATE OR REPLACE` it, the governed copy can be skipped and the policy attached directly. Say so and confirm; the default is to keep the copy. |
 | Database and schema names | Use names the user supplies. Never hard-code an organisation or account identifier. |
 

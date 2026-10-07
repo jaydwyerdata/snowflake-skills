@@ -349,7 +349,7 @@ To create a new CDC feed using this pattern, you need:
 | **Change history retention (days)** | How long field-level change audit rows are kept. | `365` |
 | **Delta retention (days)** | How long delivered delta rows are kept, defines backfill window. | `90` |
 | **Soft-delete grace period (days)** | How long a deleted record's last-known state is kept in BASE after removal is delivered downstream. | `30` |
-| **Timezone** | Timezone for cron and timestamp operations. | `UTC` |
+| **Timezone** | Timezone for cron and timestamp operations. | `Australia/Sydney` |
 | **Notification integration** | (Optional) Snowflake notification integration for task error alerts. | `MY_NOTIFICATION_INT` |
 
 ---
