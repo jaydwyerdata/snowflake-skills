@@ -1,0 +1,366 @@
+--------------------------------------------------------------------------------
+-- 03_walkthrough.sql
+-- RAM V2 Example: 9 scenario steps, run after 01_setup.sql and 02_objects.sql
+-- Run as RAM_V2_ADMIN unless stated otherwise
+--------------------------------------------------------------------------------
+USE ROLE RAM_V2_ADMIN;
+USE DATABASE RAM_V2_EXAMPLE;
+USE WAREHOUSE COMPUTE_WH;
+
+-- Observations: what each step actually saw, recorded while it ran, so 04_assertions.sql compares
+-- real results with independent expectations instead of re-describing the walkthrough.
+-- Run this whole file in ONE worksheet session: the SET variables below carry across role switches.
+CREATE OR REPLACE TABLE GOVERNANCE.OBSERVATIONS (
+    OBS_NAME    VARCHAR(100),
+    VALUE       NUMBER,
+    RECORDED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- ============================================================
+-- STEP 0: Initial refresh to populate the governed copy
+-- ============================================================
+CALL GOVERNANCE.SP_REFRESH_GOVERNED_COPY();
+-- Expect: COMPLETED, 2000 snapshot_rows
+
+SELECT COUNT(*) AS GOVERNED_ROWS FROM SHARED.GOVERNED_STOCK_MOVEMENTS;
+-- Expect: 2000
+
+-- ============================================================
+-- STEP 1: Onboard CSV with existing and missing pairs
+--   P1001+S2001 -> GROUP_ALPHA (exists) -> PASS
+--   P1002+S2002 -> GROUP_BETA  (exists) -> PASS
+--   P1099+S2099 -> GROUP_GAMMA (absent) -> PENDING
+-- ============================================================
+
+-- Write the CSV to the request stage
+COPY INTO @GOVERNANCE.REQUEST_STAGE/onboard_01.csv
+FROM (
+    SELECT 'P1001' AS C1, 'S2001' AS C2, 'GROUP_ALPHA' AS C3
+    UNION ALL SELECT 'P1002', 'S2002', 'GROUP_BETA'
+    UNION ALL SELECT 'P1099', 'S2099', 'GROUP_GAMMA'
+)
+FILE_FORMAT = (TYPE='CSV' COMPRESSION='NONE' FIELD_OPTIONALLY_ENCLOSED_BY='"')
+SINGLE = TRUE OVERWRITE = TRUE HEADER = TRUE;
+
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('onboard_01.csv');
+-- Expect: PASS=2, PENDING=1, REJECTED=0, SKIPPED=0
+
+-- Verify requests
+SELECT REQUEST_ID, PRODUCT_ID, SUPPLIER_ID, MAPPING_KEY, STATUS, REASON
+FROM GOVERNANCE.V2_REQUESTS ORDER BY REQUEST_ID;
+
+-- Verify assignments
+SELECT * FROM GOVERNANCE.PAIR_ASSIGNMENTS ORDER BY PRODUCT_ID;
+
+-- Verify mappings
+SELECT * FROM GOVERNANCE.ACCESS_MAPPING;
+
+-- Verify governed rows got keys
+SELECT MAPPING_KEY, COUNT(*) AS ROW_CNT
+FROM SHARED.GOVERNED_STOCK_MOVEMENTS
+WHERE MAPPING_KEY IS NOT NULL
+GROUP BY MAPPING_KEY ORDER BY MAPPING_KEY;
+
+-- Record step 1 state: GROUP_GAMMA must be PENDING now (it moves to PASS in step 4)
+SET S1_GAMMA_PENDING = (SELECT COUNT(*) FROM GOVERNANCE.V2_REQUESTS
+                        WHERE MAPPING_KEY = 'GROUP_GAMMA' AND STATUS = 'PENDING');
+SET S1_ASSIGNMENTS = (SELECT COUNT(*) FROM GOVERNANCE.PAIR_ASSIGNMENTS);
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S1_GAMMA_PENDING', $S1_GAMMA_PENDING;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S1_ASSIGNMENTS', $S1_ASSIGNMENTS;
+
+-- ============================================================
+-- STEP 2: Viewer isolation with USE SECONDARY ROLES NONE
+--   RAM_V2_GROUP_ALPHA_VIEWER sees only P1001+S2001 rows
+-- ============================================================
+
+-- First, grant viewer role to current user for testing
+SET ME = (SELECT '"' || REPLACE(CURRENT_USER(), '"', '""') || '"');
+GRANT ROLE RAM_V2_GROUP_ALPHA_VIEWER TO USER IDENTIFIER($ME);
+GRANT ROLE RAM_V2_GROUP_BETA_VIEWER TO USER IDENTIFIER($ME);
+
+-- Consumer warehouse access is a separate step done by whoever owns the warehouse (here ACCOUNTADMIN).
+-- RAM_V2_ADMIN cannot grant it, and with secondary roles NONE the viewer has no other route to a warehouse.
+USE ROLE ACCOUNTADMIN;
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE RAM_V2_GROUP_BETA_VIEWER;
+USE ROLE RAM_V2_ADMIN;
+
+-- Independent expectation, counted from the SOURCE table (not the governed copy or the policy)
+SET S2_ALPHA_EXPECTED = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+                         WHERE PRODUCT_ID = 'P1001' AND SUPPLIER_ID = 'S2001');
+
+-- Switch to viewer role
+USE ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+USE SECONDARY ROLES NONE;
+USE WAREHOUSE COMPUTE_WH;
+
+-- What the viewer actually sees
+SET S2_ALPHA_SEEN = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS);
+SET S2_ALPHA_OTHER_ROWS = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS
+                           WHERE NOT (PRODUCT_ID = 'P1001' AND SUPPLIER_ID = 'S2001'));
+SELECT $S2_ALPHA_SEEN AS VIEWER_ALPHA_ROWS, $S2_ALPHA_EXPECTED AS EXPECTED_FROM_SOURCE,
+       $S2_ALPHA_OTHER_ROWS AS ROWS_FROM_OTHER_PAIRS;
+-- Expect: seen = expected, other rows = 0
+
+-- Switch back to admin and record
+USE ROLE RAM_V2_ADMIN;
+USE SECONDARY ROLES ALL;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S2_ALPHA_EXPECTED', $S2_ALPHA_EXPECTED;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S2_ALPHA_SEEN', $S2_ALPHA_SEEN;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S2_ALPHA_OTHER_ROWS', $S2_ALPHA_OTHER_ROWS;
+
+-- ============================================================
+-- STEP 3: Re-submit identical file => all SKIPPED
+-- ============================================================
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('onboard_01.csv');
+-- Expect: PASS=0, PENDING=0, SKIPPED=3
+
+-- Verify no duplicate submissions doubled the rejected history
+SELECT OUTCOME, COUNT(*) AS CNT
+FROM GOVERNANCE.V2_SUBMISSIONS
+WHERE FILENAME='onboard_01.csv'
+GROUP BY OUTCOME ORDER BY OUTCOME;
+
+-- Verify assignments unchanged
+SET S3_ASSIGNMENTS = (SELECT COUNT(*) FROM GOVERNANCE.PAIR_ASSIGNMENTS);
+SELECT $S3_ASSIGNMENTS AS ASSIGNMENT_COUNT, $S1_ASSIGNMENTS AS AFTER_STEP_1;
+-- Expect: unchanged since step 1
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S3_ASSIGNMENTS', $S3_ASSIGNMENTS;
+
+-- ============================================================
+-- STEP 4: Insert source rows for PENDING pair, refresh, re-onboard
+--   P1099+S2099 should move from PENDING to PASS
+-- ============================================================
+
+-- Need ACCOUNTADMIN to insert into source (source team action)
+USE ROLE ACCOUNTADMIN;
+INSERT INTO RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+SELECT
+    2000 + ROW_NUMBER() OVER (ORDER BY SEQ4()) AS MOVEMENT_ID,
+    'P1099' AS PRODUCT_ID,
+    'S2099' AS SUPPLIER_ID,
+    'WH-1' AS WAREHOUSE_CODE,
+    100 AS QUANTITY,
+    'IN' AS MOVEMENT_TYPE,
+    CURRENT_DATE() AS MOVEMENT_DATE
+FROM TABLE(GENERATOR(ROWCOUNT => 10));
+
+-- Switch back and refresh
+USE ROLE RAM_V2_ADMIN;
+CALL GOVERNANCE.SP_REFRESH_GOVERNED_COPY();
+-- Expect: COMPLETED, 2010 snapshot_rows
+
+-- Onboard again to trigger pending recheck
+-- Use a dummy empty-but-valid CSV or re-submit original to trigger recheck
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('onboard_01.csv');
+-- Expect: SKIPPED=3 from file rows, PENDING_RECHECKED=1 (GROUP_GAMMA resolved)
+
+-- Verify GROUP_GAMMA is now PASS
+SELECT REQUEST_ID, PRODUCT_ID, SUPPLIER_ID, MAPPING_KEY, STATUS, RESOLVED_BY_RUN_ID
+FROM GOVERNANCE.V2_REQUESTS
+WHERE MAPPING_KEY='GROUP_GAMMA'
+ORDER BY REQUEST_ID;
+
+-- Verify viewer role works for GROUP_GAMMA
+SET S4_GAMMA_EXPECTED = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+                         WHERE PRODUCT_ID = 'P1099' AND SUPPLIER_ID = 'S2099');
+GRANT ROLE RAM_V2_GROUP_GAMMA_VIEWER TO USER IDENTIFIER($ME);
+USE ROLE ACCOUNTADMIN;
+GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE RAM_V2_GROUP_GAMMA_VIEWER;
+USE ROLE RAM_V2_GROUP_GAMMA_VIEWER;
+USE SECONDARY ROLES NONE;
+USE WAREHOUSE COMPUTE_WH;
+
+SET S4_GAMMA_SEEN = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS);
+SELECT $S4_GAMMA_SEEN AS GAMMA_ROWS, $S4_GAMMA_EXPECTED AS EXPECTED_FROM_SOURCE;
+-- Expect: equal (10)
+
+USE ROLE RAM_V2_ADMIN;
+USE SECONDARY ROLES ALL;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S4_GAMMA_EXPECTED', $S4_GAMMA_EXPECTED;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S4_GAMMA_SEEN', $S4_GAMMA_SEEN;
+
+-- ============================================================
+-- STEP 5: New child rows for an already assigned pair
+--   Insert more P1001+S2001 rows, refresh => visible without new CSV
+-- ============================================================
+SET S5_ONBOARD_RUNS_BEFORE = (SELECT COUNT(*) FROM GOVERNANCE.V2_RUNS WHERE OPERATION = 'ONBOARD');
+USE ROLE ACCOUNTADMIN;
+INSERT INTO RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+SELECT
+    2010 + ROW_NUMBER() OVER (ORDER BY SEQ4()) AS MOVEMENT_ID,
+    'P1001' AS PRODUCT_ID,
+    'S2001' AS SUPPLIER_ID,
+    'WH-2' AS WAREHOUSE_CODE,
+    250 AS QUANTITY,
+    'TRANSFER' AS MOVEMENT_TYPE,
+    CURRENT_DATE() AS MOVEMENT_DATE
+FROM TABLE(GENERATOR(ROWCOUNT => 5));
+
+USE ROLE RAM_V2_ADMIN;
+CALL GOVERNANCE.SP_REFRESH_GOVERNED_COPY();
+
+-- Check: the new rows should have MAPPING_KEY = 'GROUP_ALPHA' from durable assignment
+SELECT COUNT(*) AS ALPHA_ROWS_AFTER
+FROM SHARED.GOVERNED_STOCK_MOVEMENTS
+WHERE MAPPING_KEY='GROUP_ALPHA' AND REMOVED_AT IS NULL;
+-- Expect: 45 (40 original + 5 new)
+
+-- Verify viewer sees them, with no onboarding call in between
+SET S5_ONBOARD_RUNS_AFTER = (SELECT COUNT(*) FROM GOVERNANCE.V2_RUNS WHERE OPERATION = 'ONBOARD');
+SET S5_ALPHA_EXPECTED = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+                         WHERE PRODUCT_ID = 'P1001' AND SUPPLIER_ID = 'S2001');
+USE ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+USE SECONDARY ROLES NONE;
+USE WAREHOUSE COMPUTE_WH;
+
+SET S5_ALPHA_SEEN = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS);
+SELECT $S5_ALPHA_SEEN AS VIEWER_ALPHA_AFTER, $S5_ALPHA_EXPECTED AS EXPECTED_FROM_SOURCE;
+-- Expect: equal (45)
+
+USE ROLE RAM_V2_ADMIN;
+USE SECONDARY ROLES ALL;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S5_ONBOARD_RUNS_BEFORE', $S5_ONBOARD_RUNS_BEFORE;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S5_ONBOARD_RUNS_AFTER', $S5_ONBOARD_RUNS_AFTER;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S5_ALPHA_EXPECTED', $S5_ALPHA_EXPECTED;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S5_ALPHA_SEEN', $S5_ALPHA_SEEN;
+
+-- ============================================================
+-- STEP 6a: Malformed file => REJECTED
+-- ============================================================
+COPY INTO @GOVERNANCE.REQUEST_STAGE/malformed_01.csv
+FROM (
+    SELECT 'bad_product' AS C1, '' AS C2, 'GROUP_X' AS C3
+    UNION ALL SELECT '', 'S2003', 'GROUP_Y'
+    UNION ALL SELECT 'P1003', 'S2003', 'INVALID-KEY!'
+)
+FILE_FORMAT = (TYPE='CSV' COMPRESSION='NONE' FIELD_OPTIONALLY_ENCLOSED_BY='"')
+SINGLE = TRUE OVERWRITE = TRUE HEADER = TRUE;
+
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('malformed_01.csv');
+-- Expect: all REJECTED (missing fields, invalid key format)
+
+SELECT OUTCOME, REASON, COUNT(*) AS CNT
+FROM GOVERNANCE.V2_SUBMISSIONS
+WHERE FILENAME='malformed_01.csv'
+GROUP BY OUTCOME, REASON ORDER BY OUTCOME;
+
+-- ============================================================
+-- STEP 6b: Conflicting assignment => REJECTED
+-- ============================================================
+-- P1001+S2001 is already assigned to GROUP_ALPHA; assigning to GROUP_CONFLICT should fail
+COPY INTO @GOVERNANCE.REQUEST_STAGE/conflict_01.csv
+FROM (
+    SELECT 'P1001' AS C1, 'S2001' AS C2, 'GROUP_CONFLICT' AS C3
+)
+FILE_FORMAT = (TYPE='CSV' COMPRESSION='NONE' FIELD_OPTIONALLY_ENCLOSED_BY='"')
+SINGLE = TRUE OVERWRITE = TRUE HEADER = TRUE;
+
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('conflict_01.csv');
+-- Expect: REJECTED with 'Pair already assigned to different key'
+
+SELECT OUTCOME, REASON
+FROM GOVERNANCE.V2_SUBMISSIONS
+WHERE FILENAME='conflict_01.csv' AND OUTCOME != 'SKIPPED';
+
+-- ============================================================
+-- STEP 7: Offboard GROUP_ALPHA
+--   Mapping removed, pending cancelled, viewer gets auth error
+-- ============================================================
+CALL GOVERNANCE.SP_OFFBOARD_ACCESS_V2('GROUP_ALPHA', FALSE);
+-- Expect: COMPLETED, role kept, SELECT revoked
+
+-- Verify mapping removed
+SELECT COUNT(*) AS ALPHA_MAPPINGS
+FROM GOVERNANCE.ACCESS_MAPPING WHERE MAPPING_KEY='GROUP_ALPHA';
+-- Expect: 0
+
+-- Verify key blocked
+SET S7_ALPHA_BLOCKED = (SELECT IFF(BLOCKED, 1, 0) FROM GOVERNANCE.V2_KEYS WHERE MAPPING_KEY = 'GROUP_ALPHA');
+SET S7_ALPHA_MAPPINGS = (SELECT COUNT(*) FROM GOVERNANCE.ACCESS_MAPPING WHERE MAPPING_KEY = 'GROUP_ALPHA');
+SELECT $S7_ALPHA_BLOCKED AS BLOCKED, $S7_ALPHA_MAPPINGS AS MAPPINGS;
+-- Expect: 1, 0
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S7_ALPHA_BLOCKED', $S7_ALPHA_BLOCKED;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S7_ALPHA_MAPPINGS', $S7_ALPHA_MAPPINGS;
+
+-- SELECT on the governed copy must now be revoked from the viewer role (the reason it gets an
+-- authorisation error rather than zero rows)
+SHOW GRANTS TO ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+SET S7_ALPHA_SELECT_GRANTS = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+                              WHERE "privilege" = 'SELECT' AND "name" ILIKE '%GOVERNED_STOCK_MOVEMENTS%');
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S7_ALPHA_SELECT_GRANTS', $S7_ALPHA_SELECT_GRANTS;
+
+-- Verify requests cancelled
+SELECT STATUS, COUNT(*) AS CNT
+FROM GOVERNANCE.V2_REQUESTS WHERE MAPPING_KEY='GROUP_ALPHA'
+GROUP BY STATUS ORDER BY STATUS;
+-- Expect: all CANCELLED
+
+-- Viewer should get an authorisation error (no SELECT)
+USE ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+USE SECONDARY ROLES NONE;
+USE WAREHOUSE COMPUTE_WH;
+
+-- This SELECT should fail with an access error
+-- (run this manually; it will produce an error, confirming the test)
+-- SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS;
+
+-- Switch back
+USE ROLE RAM_V2_ADMIN;
+USE SECONDARY ROLES ALL;
+
+-- ============================================================
+-- STEP 8: Re-submit original file after offboarding
+--   GROUP_ALPHA access must NOT be restored
+-- ============================================================
+CALL GOVERNANCE.SP_ONBOARD_ACCESS_V2('onboard_01.csv');
+-- Expect: GROUP_ALPHA -> REJECTED (key is blocked)
+--         GROUP_BETA  -> SKIPPED (already PASS)
+--         GROUP_GAMMA -> SKIPPED (already PASS)
+
+SELECT OUTCOME, REASON, PRODUCT_ID, SUPPLIER_ID, MAPPING_KEY
+FROM GOVERNANCE.V2_SUBMISSIONS s
+WHERE s.RUN_ID = (SELECT MAX(RUN_ID) FROM GOVERNANCE.V2_RUNS WHERE OPERATION='ONBOARD')
+ORDER BY FILE_ROW_NUM;
+
+-- Verify GROUP_ALPHA still has no mapping
+SET S8_ALPHA_MAPPINGS = (SELECT COUNT(*) FROM GOVERNANCE.ACCESS_MAPPING WHERE MAPPING_KEY = 'GROUP_ALPHA');
+SELECT $S8_ALPHA_MAPPINGS AS ALPHA_MAP_AFTER;
+-- Expect: 0
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S8_ALPHA_MAPPINGS', $S8_ALPHA_MAPPINGS;
+
+-- ============================================================
+-- STEP 9: Reauthorize GROUP_ALPHA explicitly
+--   Access returns
+-- ============================================================
+CALL GOVERNANCE.SP_REAUTHORIZE_ACCESS_V2('GROUP_ALPHA', 'Re-approved by manager after security review completed');
+-- Expect: COMPLETED, pairs restored
+
+-- Verify mapping restored
+SELECT * FROM GOVERNANCE.ACCESS_MAPPING WHERE MAPPING_KEY='GROUP_ALPHA';
+-- Expect: 1 row
+
+-- Verify key unblocked
+SELECT BLOCKED, GENERATION FROM GOVERNANCE.V2_KEYS WHERE MAPPING_KEY='GROUP_ALPHA';
+-- Expect: FALSE, generation=2
+
+-- Verify viewer can query again
+SET S9_ALPHA_EXPECTED = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SOURCE.STOCK_MOVEMENTS
+                         WHERE PRODUCT_ID = 'P1001' AND SUPPLIER_ID = 'S2001');
+USE ROLE RAM_V2_GROUP_ALPHA_VIEWER;
+USE SECONDARY ROLES NONE;
+USE WAREHOUSE COMPUTE_WH;
+
+SET S9_ALPHA_SEEN = (SELECT COUNT(*) FROM RAM_V2_EXAMPLE.SHARED.GOVERNED_STOCK_MOVEMENTS);
+SELECT $S9_ALPHA_SEEN AS VIEWER_ALPHA_REAUTH, $S9_ALPHA_EXPECTED AS EXPECTED_FROM_SOURCE;
+-- Expect: equal (45)
+
+USE ROLE RAM_V2_ADMIN;
+USE SECONDARY ROLES ALL;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S9_ALPHA_EXPECTED', $S9_ALPHA_EXPECTED;
+INSERT INTO GOVERNANCE.OBSERVATIONS (OBS_NAME, VALUE) SELECT 'S9_ALPHA_SEEN', $S9_ALPHA_SEEN;
+
+-- ============================================================
+-- SUMMARY: All 9 scenario steps executed
+-- ============================================================
+SELECT 'Walkthrough complete. Run 04_assertions.sql to record PASS/FAIL results.' AS NEXT_STEP;

@@ -100,8 +100,11 @@ session as `ACCOUNTADMIN`.
 The skill has also been invoked end to end from Cortex Code in Snowsight against a separate
 5,000-row table of invented data in a trial account (not one of the worked examples). It generated
 the objects, its own checks (26 passing), a clean-up script and a build record. That run fell back to
-the Snowflake CLI at points, because the skill did not yet say not to; the skill now states that it
-needs no CLI and the fix has not yet been re-run.
+the Snowflake CLI at points, because the skill did not yet say not to. The skill now states that it
+needs no CLI. A later Snowsight run of the V2 candidate of this skill (see
+[`../snowflake-row-access-mapping-v2-candidate/`](../snowflake-row-access-mapping-v2-candidate/))
+did not suggest the CLI. That is one run, and the version of the skill in this folder has not itself
+been re-run.
 
 ## Out of scope
 

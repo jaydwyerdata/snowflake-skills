@@ -43,8 +43,8 @@ A blank `RECORD_ID` grants the role a key that already has records without assig
   applied. Fix the file and resubmit it under a new name.
 - Offboarding uses a two-column file (`MAPPING_KEY,ROLE_NAME`) in both modes.
 
-Upload it to the `GOVERNANCE.ACCESS_REQUESTS` stage (Snowsight: the stage's **+ Files** button, or
-`PUT file://... @RAP_DEMO.GOVERNANCE.ACCESS_REQUESTS`).
+Upload it to the `GOVERNANCE.ACCESS_REQUESTS` stage in Snowsight, using the stage's **+ Files**
+button.
 
 ---
 
